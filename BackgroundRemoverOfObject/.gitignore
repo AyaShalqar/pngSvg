@@ -23,3 +23,5 @@ uploads/*
 # Generated images
 generated_image.png
 output_image*.png
+
+.env
