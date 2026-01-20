@@ -1,17 +1,15 @@
-from google import genai
-from google.genai.errors import ClientError
-from dotenv import load_dotenv
 import os
 import time
+from io import BytesIO
+
 from PIL import Image
+from dotenv import load_dotenv
+from google import genai
+from google.genai.errors import ClientError
 
 load_dotenv()
 
-def gemini_background_white(imager_path: str, max_retries: int = 3) -> str:
-    api_key1 = os.getenv("GEMINI_TOKEN")
-    client = genai.Client(api_key=api_key1)
-
-    prompt = """
+PROMPT = """
 Use the uploaded image as the source.
 
 Precisely cut out the main object from the photo, completely removing the background.
@@ -27,34 +25,44 @@ Neutral lighting, no shadows.
 The final result should look like a high-quality professional asset for UI, e-commerce, or product catalogs.
 
 No text, no watermarks, no extra objects.
-"""
+""".strip()
 
-    image = Image.open(imager_path)
 
+def gemini_background_white(image_bytes: bytes, max_retries: int = 3) -> bytes:
+    api_key = os.getenv("GEMINI_TOKEN")
+    if not api_key:
+        raise RuntimeError("GEMINI_TOKEN is not set")
+
+    client = genai.Client(api_key=api_key)
+    src_img = Image.open(BytesIO(image_bytes))
+
+    response = None
     for attempt in range(max_retries):
         try:
             response = client.models.generate_content(
                 model="gemini-2.5-flash-image",
-                contents=[prompt, image],
+                contents=[PROMPT, src_img],
             )
             break
         except ClientError as e:
             if "429" in str(e) and attempt < max_retries - 1:
                 wait_time = 60 * (attempt + 1)
-                print(f"Rate limit hit. Waiting {wait_time}s before retry...")
                 time.sleep(wait_time)
             else:
                 raise
-    output_path = "uploads/generated_image.png"
 
-    for part in response.parts:
-        if part.text is not None:
+    out_img_bytes = None
+    for part in getattr(response, "parts", []) or []:
+        if getattr(part, "inline_data", None) is not None:
+            out_img_bytes = part.as_image().image_bytes
+            break
+        if getattr(part, "text", None):
             print(part.text)
-        elif part.inline_data is not None:
-            image = part.as_image()
-            image.save(output_path)
 
-    return output_path
+    if out_img_bytes is None:
+        raise RuntimeError("No image returned by the model")
 
-
-
+    out_pil = Image.open(BytesIO(out_img_bytes)).convert("RGB")
+    out_buf = BytesIO()
+    out_pil.save(out_buf, format="PNG", optimize=True)
+    return out_buf.getvalue()
